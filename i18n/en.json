@@ -1,0 +1,7 @@
+{
+  "mode.tablet": "in tablet mode",
+  "mode.always": "always",
+  "mode.off": "off",
+  "tooltip.unlocked": "Auto-rotate %1\nClick to lock, right-click to change mode",
+  "tooltip.locked": "Rotation locked (auto-rotate %1)\nClick to unlock, right-click to change mode"
+}

@@ -1,0 +1,229 @@
+#!/bin/bash
+# Install the laptop maker's Intel Sensor Hub (ISH) firmware so Linux sees the
+# accelerometer.
+#
+# From Lunar Lake on, the ISH boots firmware handed to it by the OS. OEM boards
+# only accept the OEM-signed image, and linux-firmware ships Intel's generic one
+# plus a handful of vendor images, so most 2-in-1s boot Linux with no sensors.
+# Windows keeps the OEM image in its driver store; this copies it from there into
+# a local pacman package under /usr/lib/firmware/updates, named the way the
+# kernel's ISH loader looks for vendor firmware (drivers/hid/intel-ish-hid/ishtp/loader.c).
+
+set -euo pipefail
+
+PKGNAME=omarchy-autorotate-ish-firmware
+DMI=/sys/class/dmi/id
+
+usage() {
+  cat <<USAGE
+Usage: omarchy-autorotate-firmware <command>
+
+  status              Show the ISH generation, the firmware name the kernel looks
+                      for, what it loaded this boot, and whether an accelerometer exists
+  install [--from F]  Package the OEM ISH firmware and install it with pacman.
+                      Without --from, searches Windows partitions (mounting them
+                      read-only if needed) for the OEM image (FwImage/*/ishC_*.bin)
+  remove              Uninstall the firmware package
+
+A reboot is needed after install or remove: once the ISH rejects an image it
+only accepts a new one after a platform reset.
+USAGE
+}
+
+fail() {
+  echo "omarchy-autorotate-firmware: $*" >&2
+  exit 1
+}
+
+as_root() {
+  if [[ -t 0 ]]; then sudo "$@"; else pkexec "$@"; fi
+}
+
+# Firmware generation string, keyed by ISH PCI device id (drivers/hid/intel-ish-hid/ipc/hw-ish.h).
+ish_generation() {
+  local dev vendor device
+  for dev in /sys/bus/pci/devices/*; do
+    vendor=$(<"$dev/vendor")
+    [[ $vendor == 0x8086 ]] || continue
+    device=$(<"$dev/device")
+    case $device in
+    0xa845) echo lnlm; return ;;
+    0xe345 | 0xe445) echo ptl; return ;;
+    0x4d45) echo wcl; return ;;
+    0xd354) echo nvlh; return ;;
+    0x6e78) echo nvls; return ;;
+    esac
+  done
+  return 1
+}
+
+# Directory the Windows ISH driver keeps each platform's images in (IshHeci.inf: LNL=0003, PTL=0004, NVL=0005).
+windows_platform_dir() {
+  case $1 in
+  lnlm) echo 0003 ;;
+  ptl) echo 0004 ;;
+  nvlh | nvls) echo 0005 ;;
+  *) return 1 ;;
+  esac
+}
+
+# CRC-32 (poly 0x04C11DB7 reflected, init/xorout 0xFFFFFFFF) over the string's bytes, as the loader computes it.
+crc32() {
+  local crc=$((0xFFFFFFFF)) byte bit
+  for byte in $(printf '%s' "$1" | od -An -v -tu1); do
+    crc=$((crc ^ byte))
+    for bit in 1 2 3 4 5 6 7 8; do
+      if ((crc & 1)); then crc=$(((crc >> 1) ^ 0xEDB88320)); else crc=$((crc >> 1)); fi
+    done
+  done
+  printf '%08x' $((crc ^ 0xFFFFFFFF))
+}
+
+dmi() {
+  local value=""
+  [[ -r $DMI/$1 ]] && value=$(<"$DMI/$1")
+  printf '%s' "$value"
+}
+
+# ish_<gen>_<SYS_VENDOR crc>_<PRODUCT_NAME crc>.bin: matches every SKU of this model, and ranks
+# above the vendor-wide and generic images in the loader's search order.
+firmware_name() {
+  local gen=$1 vendor name
+  vendor=$(dmi sys_vendor)
+  name=$(dmi product_name)
+  [[ -n $vendor && -n $name ]] || fail "DMI sys_vendor/product_name unavailable"
+  printf 'ish_%s_%s_%s.bin' "$gen" "$(crc32 "$vendor")" "$(crc32 "$name")"
+}
+
+has_accelerometer() {
+  local name
+  for name in /sys/bus/iio/devices/iio:device*/name; do
+    [[ -r $name ]] || continue
+    [[ $(<"$name") == accel* ]] && return 0
+  done
+  return 1
+}
+
+cmd_status() {
+  local gen loader_log loaded
+  gen=$(ish_generation) || { echo "No host-loaded Intel Sensor Hub on this machine (pre-Lunar Lake ISH keeps its firmware in flash)."; return 0; }
+  echo "Model:            $(dmi sys_vendor) $(dmi product_name)"
+  echo "ISH generation:   $gen"
+  echo "Firmware name:    intel/ish/$(firmware_name "$gen")"
+  loader_log=$(journalctl -k -b --no-pager -o cat 2>/dev/null | grep 'ISH loader:' || true)
+  loaded=$(grep -o 'load firmware: .*' <<<"$loader_log" | tail -1 || true)
+  echo "Loaded this boot: ${loaded#load firmware: }"
+  [[ $loader_log == *"failed"* ]] && echo "                  (rejected by the ISH)"
+  echo "Package:          $(pacman -Q "$PKGNAME" 2>/dev/null || echo "not installed")"
+  if has_accelerometer; then echo "Accelerometer:    present"; else echo "Accelerometer:    missing"; fi
+}
+
+MOUNTED_BY_US=()
+
+cleanup_mounts() {
+  local dev
+  for dev in "${MOUNTED_BY_US[@]}"; do
+    udisksctl unmount -b "$dev" >/dev/null 2>&1 || true
+  done
+}
+
+driver_stores() {
+  local target
+  while read -r target; do
+    [[ -d $target/Windows/System32/DriverStore/FileRepository ]] && echo "$target/Windows/System32/DriverStore/FileRepository"
+  done < <(findmnt -rn -t ntfs3,ntfs,fuseblk -o TARGET)
+}
+
+# Runs in the calling shell so MOUNTED_BY_US survives for cleanup_mounts.
+mount_ntfs_partitions() {
+  local dev fstype mountpoint
+  while read -r dev fstype mountpoint; do
+    [[ $fstype == ntfs && -z $mountpoint ]] || continue
+    udisksctl mount -b "$dev" -o ro >/dev/null 2>&1 && MOUNTED_BY_US+=("$dev")
+  done < <(lsblk -rnpo NAME,FSTYPE,MOUNTPOINT)
+}
+
+# The OEM image is the ishC_* file an OEM extension INF drops next to Intel's generic ishS_* one.
+# Several driver versions may be staged; the newest file name (they carry a date or version) wins.
+find_oem_firmware() {
+  local platform=$1 store
+  while read -r store; do
+    compgen -G "$store/*/FwImage/$platform/ishC_*.bin" || true
+  done < <(driver_stores) | awk -F/ '{ print $NF "\t" $0 }' | sort | tail -1 | cut -f2
+}
+
+cmd_install() {
+  local source="" gen name build version product
+  while (($#)); do
+    case $1 in
+    --from)
+      [[ $# -ge 2 ]] || fail "--from needs a file"
+      source=$2
+      shift 2
+      ;;
+    *) fail "unknown install option: $1" ;;
+    esac
+  done
+
+  gen=$(ish_generation) || fail "this machine has no host-loaded Intel Sensor Hub; nothing to install"
+  name=$(firmware_name "$gen")
+
+  if [[ -z $source ]]; then
+    local platform
+    platform=$(windows_platform_dir "$gen") || fail "no known Windows firmware directory for ISH generation $gen; pass --from <file>"
+    source=$(find_oem_firmware "$platform")
+    if [[ -z $source ]]; then
+      trap cleanup_mounts EXIT
+      mount_ntfs_partitions
+      source=$(find_oem_firmware "$platform")
+    fi
+    [[ -n $source ]] || fail "no OEM ISH firmware (FwImage/$platform/ishC_*.bin) found on a Windows partition; pass --from <file> with the image from your laptop maker's Windows ISH driver"
+  fi
+  [[ -f $source ]] || fail "firmware file not found: $source"
+  head -c 4 "$source" | grep -q '\$CPD' || fail "$source is not an ISH firmware image (missing \$CPD header)"
+
+  echo "Firmware:  $source"
+  echo "Installs:  /usr/lib/firmware/updates/intel/ish/$name"
+
+  version=$(basename "$source" .bin | grep -oE '[0-9][0-9.]*$' || true)
+  [[ -n $version ]] || version=$(date +%Y%m%d)
+  product=$(dmi product_name | tr -cd '[:alnum:] ._-')
+
+  build=$(mktemp -d)
+  cp -- "$source" "$build/firmware.bin"
+  cat >"$build/PKGBUILD" <<PKGBUILD
+pkgname=$PKGNAME
+pkgver=$version
+pkgrel=1
+pkgdesc='OEM Intel Sensor Hub firmware for $product, from its Windows driver'
+arch=(any)
+license=(LicenseRef-OEM-proprietary)
+options=(!strip !debug)
+source=(firmware.bin)
+sha256sums=($(sha256sum "$build/firmware.bin" | cut -d' ' -f1))
+
+package() {
+  install -Dm644 firmware.bin "\$pkgdir/usr/lib/firmware/updates/intel/ish/$name"
+}
+PKGBUILD
+
+  (cd "$build" && makepkg -f --nodeps --noconfirm >/dev/null) || fail "makepkg failed in $build"
+  as_root pacman -U --noconfirm "$build"/"$PKGNAME"-*.pkg.tar.*
+  rm -rf "$build"
+
+  echo "Installed. Reboot so the sensor hub loads it."
+}
+
+cmd_remove() {
+  pacman -Q "$PKGNAME" >/dev/null 2>&1 || fail "$PKGNAME is not installed"
+  as_root pacman -R --noconfirm "$PKGNAME"
+  echo "Removed. Reboot to go back to the stock firmware."
+}
+
+case ${1:-} in
+status) cmd_status ;;
+install) shift; cmd_install "$@" ;;
+remove) cmd_remove ;;
+-h | --help | help | "") usage ;;
+*) fail "unknown command: $1 (see --help)" ;;
+esac

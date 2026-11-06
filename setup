@@ -1,0 +1,99 @@
+#!/bin/bash
+# omarchy plugin add only clones files, so this is the rest of the install:
+# the sensor daemon, the OEM sensor hub firmware where it is missing, and the
+# Hyprland switch binds that tell the plugin about tablet mode.
+#
+#   setup            install
+#   setup --remove   undo everything but the iio-sensor-proxy package
+
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")" && pwd)
+id=io.github.nmaroulis.autorotate
+hypr_dir="${XDG_CONFIG_HOME:-$HOME/.config}/hypr"
+binds_file="$hypr_dir/autorotate.lua"
+require_line='require("hypr.autorotate")'
+firmware="$root/bin/omarchy-autorotate-firmware"
+
+# Input devices that report SW_TABLET_MODE (bit 1 of the SW bitmap). A device with
+# only that switch is preferred: Hyprland's switch binds fire on any switch of the
+# device, so one that also reports, say, docking would flip the posture on a dock.
+tablet_switches() {
+  local name="" sw exact=() mixed=()
+  while IFS= read -r line; do
+    case $line in
+    N:\ Name=*) name=${line#N: Name=\"}; name=${name%\"} ;;
+    B:\ SW=*)
+      sw=$((16#${line#B: SW=}))
+      if ((sw == 2)); then exact+=("$name")
+      elif ((sw & 2)); then mixed+=("$name"); fi
+      ;;
+    esac
+  done </proc/bus/input/devices
+  if ((${#exact[@]})); then printf '%s\n' "${exact[@]}"; else printf '%s\n' "${mixed[@]}"; fi
+}
+
+write_binds() {
+  local name
+  mkdir -p "$hypr_dir"
+  {
+    echo "-- Written by the Auto-rotate plugin's setup ($id)."
+    echo "-- Tells the plugin when the laptop folds into or out of tablet mode."
+    while IFS= read -r name; do
+      [[ -n $name ]] || continue
+      printf 'o.bind("switch:on:%s", nil, "omarchy-shell -q autorotate tablet on", { locked = true })\n' "$name"
+      printf 'o.bind("switch:off:%s", nil, "omarchy-shell -q autorotate tablet off", { locked = true })\n' "$name"
+    done < <(tablet_switches)
+  } >"$binds_file"
+  grep -qxF "$require_line" "$hypr_dir/hyprland.lua" || printf '\n%s\n' "$require_line" >>"$hypr_dir/hyprland.lua"
+}
+
+reload_hyprland() {
+  hyprctl reload >/dev/null
+  local errors
+  errors=$(hyprctl configerrors)
+  [[ -z ${errors//[[:space:]]/} ]] || { echo "$errors" >&2; return 1; }
+}
+
+install() {
+  omarchy pkg add iio-sensor-proxy
+
+  if ! "$firmware" status | grep -q 'Accelerometer:    present'; then
+    if "$firmware" status | grep -q 'ISH generation'; then
+      echo "No accelerometer: installing the OEM sensor hub firmware."
+      "$firmware" install
+      reboot_needed=1
+    else
+      echo "No accelerometer found, and this machine's sensor hub keeps its own firmware." >&2
+      echo "Check that iio-sensor-proxy sees one: monitor-sensor --accel" >&2
+    fi
+  fi
+
+  if [[ -z $(tablet_switches) ]]; then
+    echo "No tablet-mode switch found; use 'always' mode: omarchy-shell autorotate mode always" >&2
+  fi
+  write_binds
+  reload_hyprland
+
+  omarchy plugin enable "$id"
+
+  echo "Auto-rotate is set up. Modes: omarchy-shell autorotate mode tablet|always|off"
+  if ((${reboot_needed:-0})); then echo "Reboot so the sensor hub loads its firmware."; fi
+}
+
+remove() {
+  rm -f "$binds_file"
+  if [[ -f $hypr_dir/hyprland.lua ]]; then
+    grep -vxF "$require_line" "$hypr_dir/hyprland.lua" >"$hypr_dir/hyprland.lua.tmp" || true
+    mv "$hypr_dir/hyprland.lua.tmp" "$hypr_dir/hyprland.lua"
+  fi
+  reload_hyprland
+  if pacman -Q omarchy-autorotate-ish-firmware >/dev/null 2>&1; then "$firmware" remove; fi
+  echo "Removed the switch binds and firmware. Finish with: omarchy plugin remove $id"
+}
+
+case ${1:-} in
+"") install ;;
+--remove) remove ;;
+*) echo "Usage: setup [--remove]" >&2; exit 1 ;;
+esac
