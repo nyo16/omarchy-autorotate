@@ -45,10 +45,11 @@ On Core Ultra 200V (Lunar Lake) and later, the accelerometer is wired to Intel's
 `bin/omarchy-autorotate-firmware` fixes this using the image Windows already loads:
 
 ```bash
-omarchy-autorotate-firmware status      # what the kernel looks for, what it loaded, accelerometer present?
-omarchy-autorotate-firmware install     # find the OEM image on the Windows partition, package it, install it
-omarchy-autorotate-firmware install --from ishC_….bin   # or use an image you extracted yourself
-omarchy-autorotate-firmware remove
+cd ~/.config/omarchy/plugins/io.github.nmaroulis.autorotate
+bin/omarchy-autorotate-firmware status      # what the kernel looks for, what it loaded, accelerometer present?
+bin/omarchy-autorotate-firmware install     # find the OEM image on the Windows partition, package it, install it
+bin/omarchy-autorotate-firmware install --from ishC_….bin   # or use an image you extracted yourself
+bin/omarchy-autorotate-firmware remove
 ```
 
 It searches the Windows driver store for `FwImage/<platform>/ishC_*.bin`, the OEM image that the vendor's ISH extension driver loads in place of Intel's generic one. If the Windows partition isn't mounted, it mounts it read-only. It then builds a local pacman package, `omarchy-autorotate-ish-firmware`, which installs the image as `/usr/lib/firmware/updates/intel/ish/ish_<gen>_<crc32(sys_vendor)>_<crc32(product_name)>.bin`. That is the name the kernel's ISH loader looks for before falling back to the generic image. Nothing is flashed: the ISH loads the image into memory at each boot. A rejected image needs a reboot before another one can be tried.
