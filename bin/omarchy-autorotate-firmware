@@ -180,7 +180,7 @@ cmd_install() {
     [[ -n $source ]] || fail "no OEM ISH firmware (FwImage/$platform/ishC_*.bin) found on a Windows partition; pass --from <file> with the image from your laptop maker's Windows ISH driver"
   fi
   [[ -f $source ]] || fail "firmware file not found: $source"
-  head -c 4 "$source" | grep -q '\$CPD' || fail "$source is not an ISH firmware image (missing \$CPD header)"
+  [[ $(head -c 4 "$source") == '$CPD' ]] || fail "$source is not an ISH firmware image (missing \$CPD header)"
 
   echo "Firmware:  $source"
   echo "Installs:  /usr/lib/firmware/updates/intel/ish/$name"

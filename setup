@@ -58,8 +58,11 @@ reload_hyprland() {
 install() {
   omarchy pkg add iio-sensor-proxy
 
-  if ! "$firmware" status | grep -q 'Accelerometer:    present'; then
-    if "$firmware" status | grep -q 'ISH generation'; then
+  # Captured, not piped: grep -q would quit early and pipefail would read the SIGPIPE as a failure.
+  local status
+  status=$("$firmware" status)
+  if [[ $status != *"Accelerometer:    present"* ]]; then
+    if [[ $status == *"ISH generation"* ]]; then
       echo "No accelerometer: installing the OEM sensor hub firmware."
       "$firmware" install
       reboot_needed=1
