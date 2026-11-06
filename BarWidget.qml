@@ -5,7 +5,7 @@ import qs.Ui
 // Rotation lock in the bar: click to lock or unlock, right-click to cycle the mode.
 BarWidget {
   id: root
-  moduleName: "io.github.nmaroulis.autorotate"
+  moduleName: "io.github.nyo16.autorotate"
 
   readonly property var service: bar && bar.shell ? bar.shell.serviceFor(moduleName) : null
   readonly property bool hideWhenInactive: setting("hideWhenInactive", false) === true

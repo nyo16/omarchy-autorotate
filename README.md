@@ -5,8 +5,8 @@ Rotates the built-in display from the accelerometer on 2-in-1 laptops, the way W
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/nmaroulis/omarchy-autorotate.git
-~/.config/omarchy/plugins/io.github.nmaroulis.autorotate/setup
+omarchy plugin add https://github.com/nyo16/omarchy-autorotate.git
+~/.config/omarchy/plugins/io.github.nyo16.autorotate/setup
 ```
 
 `setup` does what `omarchy plugin add` can't:
@@ -16,7 +16,7 @@ omarchy plugin add https://github.com/nmaroulis/omarchy-autorotate.git
 3. Writes `~/.config/hypr/autorotate.lua`, which binds the laptop's tablet-mode switch to the plugin, and adds a `require` line for it to `hyprland.lua`.
 4. Enables the plugin.
 
-`setup --remove` undoes steps 2 and 3. Then run `omarchy plugin remove io.github.nmaroulis.autorotate`.
+`setup --remove` undoes steps 2 and 3. Then run `omarchy plugin remove io.github.nyo16.autorotate`.
 
 ## Modes
 
@@ -45,7 +45,7 @@ On Core Ultra 200V (Lunar Lake) and later, the accelerometer is wired to Intel's
 `bin/omarchy-autorotate-firmware` fixes this using the image Windows already loads:
 
 ```bash
-cd ~/.config/omarchy/plugins/io.github.nmaroulis.autorotate
+cd ~/.config/omarchy/plugins/io.github.nyo16.autorotate
 bin/omarchy-autorotate-firmware status      # what the kernel looks for, what it loaded, accelerometer present?
 bin/omarchy-autorotate-firmware install     # find the OEM image on the Windows partition, package it, install it
 bin/omarchy-autorotate-firmware install --from ishC_….bin   # or use an image you extracted yourself

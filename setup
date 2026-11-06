@@ -9,7 +9,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")" && pwd)
-id=io.github.nmaroulis.autorotate
+id=io.github.nyo16.autorotate
 hypr_dir="${XDG_CONFIG_HOME:-$HOME/.config}/hypr"
 binds_file="$hypr_dir/autorotate.lua"
 require_line='require("hypr.autorotate")'
